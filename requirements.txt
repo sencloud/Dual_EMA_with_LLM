@@ -1,0 +1,10 @@
+streamlit
+httpx
+python-dotenv
+openai
+asyncio
+tushare
+ta-lib
+pandas
+numpy
+loguru
