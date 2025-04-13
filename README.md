@@ -11,6 +11,7 @@
 - 数据本地缓存，避免重复请求
 - 完整的日志记录系统
 - Web 界面展示（基于 Streamlit）
+![image](https://github.com/user-attachments/assets/8c014ebc-e207-4a73-8f1e-4e946b4ce0d7)
 
 ## 环境要求
 
