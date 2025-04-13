@@ -39,6 +39,16 @@ with st.sidebar:
     # 代码输入
     code = st.text_input("输入代码", "000001.SZ")
     
+    # 获取股票名称
+    if code:
+        stock_info = data_fetcher.get_stock_info(code)
+        if stock_info is not None:
+            st.info(f"股票名称: {stock_info['name']}")
+            stock_name = stock_info['name']
+        else:
+            st.error("获取股票信息失败")
+            st.stop()
+    
     # 日期选择
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365)
@@ -67,19 +77,40 @@ with st.sidebar:
 if st.button("开始分析"):
     logger.info(f"开始分析: {code}, 时间范围: {start_date} - {end_date}")
     with st.spinner("正在获取数据..."):
+        # 计算扩展的开始日期（往前推50天）
+        start_date_dt = datetime.strptime(start_date, "%Y%m%d")
+        extended_start_date = (start_date_dt - timedelta(days=60)).strftime("%Y%m%d")
+        logger.info(f"扩展数据获取范围: {extended_start_date} - {end_date}")
+        
         # 获取数据
-        df = data_fetcher.get_daily_data(code, start_date, end_date, asset_type)
+        # df = data_fetcher.get_daily_data(code, extended_start_date, end_date, asset_type)
+        df = data_fetcher.get_minute_data(
+            code=code,
+            start_date=start_date,
+            end_date=end_date,
+            freq="60min",
+            save_dir="minute_data"
+        )
         
         if df is None:
             logger.error("数据获取失败")
             st.error("获取数据失败，请检查代码和日期是否正确")
         else:
+            logger.info(f"数据获取成功, 数据量: {len(df)}")
             # 计算技术指标
             indicators = TechnicalIndicators(df)
             df = indicators.calculate_all(ema_short_period, ema_long_period)
             
+            # 只保留实际需要的时间范围的数据
+            # 将df中的date列格式化为yyyymmdd格式再比较
+            df['date_formatted'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d')
+            df = df[df['date_formatted'] >= start_date]
+            df = df.drop(columns=['date_formatted'])  # 删除临时列
+
+            logger.info(f"数据量: {len(df)}, df: {df}")
+            
             # 创建EMA分析器
-            analyzer = EMAAnalyzer(df, ema_short_period, ema_long_period)
+            analyzer = EMAAnalyzer(df, ema_short_period, ema_long_period, stock_name=stock_name, stock_code=code)
             
             # 检测交叉点
             crossovers = analyzer.detect_crossovers()
@@ -89,6 +120,7 @@ if st.button("开始分析"):
             
             # 创建结果表格
             results = []
+            logger.info(f"交叉点数量: {len(crossovers)}， 其中金叉: {len([c for c in crossovers if c['type'] == 'golden_cross'])}， 死叉: {len([c for c in crossovers if c['type'] == 'death_cross'])}")
             for crossover in crossovers:
                 # 获取LLM决策
                 logger.info(f"获取{crossover['date']}的决策")
@@ -117,7 +149,7 @@ if st.button("开始分析"):
             
             # 添加K线图
             fig.add_trace(go.Candlestick(
-                x=df.index,
+                x=df['date'],
                 open=df['open'],
                 high=df['high'],
                 low=df['low'],
@@ -127,14 +159,14 @@ if st.button("开始分析"):
             
             # 添加均线
             fig.add_trace(go.Scatter(
-                x=df.index,
+                x=df['date'],
                 y=df['EMA_short'],
                 name=f'EMA{ema_short_period}',
                 line=dict(color='blue')
             ))
             
             fig.add_trace(go.Scatter(
-                x=df.index,
+                x=df['date'],
                 y=df['EMA_long'],
                 name=f'EMA{ema_long_period}',
                 line=dict(color='red')

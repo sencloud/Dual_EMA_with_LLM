@@ -27,7 +27,7 @@ class TechnicalIndicators:
         """
         return self.df[column].ewm(span=period, adjust=False).mean()
         
-    def calculate_all(self, ema_short_period: int = 5, ema_long_period: int = 8) -> pd.DataFrame:
+    def calculate_all(self, ema_short_period: int = 5, ema_long_period: int = 13) -> pd.DataFrame:
         """计算所有技术指标
         
         Args:
@@ -38,12 +38,22 @@ class TechnicalIndicators:
             包含所有技术指标的DataFrame
         """
         logger.info("开始计算技术指标")
+        
         # 确保数据格式正确
-        self.df['close'] = self.df['close'].astype(float)
-        self.df['high'] = self.df['high'].astype(float)
-        self.df['low'] = self.df['low'].astype(float)
-        self.df['open'] = self.df['open'].astype(float)
-        self.df['vol'] = self.df['vol'].astype(float)
+        try:
+            self.df['close'] = pd.to_numeric(self.df['close'], errors='coerce')
+            self.df['high'] = pd.to_numeric(self.df['high'], errors='coerce')
+            self.df['low'] = pd.to_numeric(self.df['low'], errors='coerce')
+            self.df['open'] = pd.to_numeric(self.df['open'], errors='coerce')
+            self.df['vol'] = pd.to_numeric(self.df['vol'], errors='coerce')
+            
+            # 检查是否有无效数据
+            if self.df[['close', 'high', 'low', 'open', 'vol']].isnull().any().any():
+                logger.warning("数据中存在无效值，将使用前值填充")
+                self.df = self.df.fillna(method='ffill')
+        except Exception as e:
+            logger.error(f"数据格式转换失败: {str(e)}")
+            return self.df
         
         # 计算EMA
         logger.debug(f"计算EMA指标: 短期={ema_short_period}, 长期={ema_long_period}")
@@ -52,27 +62,57 @@ class TechnicalIndicators:
         
         # 计算MACD
         logger.debug("计算MACD指标")
-        self.df['MACD'], self.df['MACD_signal'], self.df['MACD_hist'] = self.calculate_macd()
+        try:
+            self.df['MACD'], self.df['MACD_signal'], self.df['MACD_hist'] = self.calculate_macd()
+        except Exception as e:
+            logger.error(f"MACD计算失败: {str(e)}")
+            self.df['MACD'] = np.nan
+            self.df['MACD_signal'] = np.nan
+            self.df['MACD_hist'] = np.nan
         
         # 计算RSI
         logger.debug("计算RSI指标")
-        self.df['RSI'] = self.calculate_rsi()
+        try:
+            self.df['RSI'] = self.calculate_rsi()
+        except Exception as e:
+            logger.error(f"RSI计算失败: {str(e)}")
+            self.df['RSI'] = np.nan
         
         # 计算布林带
         logger.debug("计算布林带指标")
-        self.df['bb_middle'], self.df['bb_upper'], self.df['bb_lower'] = self.calculate_bollinger_bands(self.df['close'])
+        try:
+            self.df['bb_middle'], self.df['bb_upper'], self.df['bb_lower'] = self.calculate_bollinger_bands(self.df['close'])
+        except Exception as e:
+            logger.error(f"布林带计算失败: {str(e)}")
+            self.df['bb_middle'] = np.nan
+            self.df['bb_upper'] = np.nan
+            self.df['bb_lower'] = np.nan
         
         # 计算KDJ
         logger.debug("计算KDJ指标")
-        self.df['k'], self.df['d'], self.df['j'] = self.calculate_kdj(self.df['high'], self.df['low'], self.df['close'])
+        try:
+            self.df['k'], self.df['d'], self.df['j'] = self.calculate_kdj(self.df['high'], self.df['low'], self.df['close'])
+        except Exception as e:
+            logger.error(f"KDJ计算失败: {str(e)}")
+            self.df['k'] = np.nan
+            self.df['d'] = np.nan
+            self.df['j'] = np.nan
         
         # 计算成交量指标
         logger.debug("计算OBV指标")
-        self.df['obv'] = talib.OBV(self.df['close'], self.df['vol'])
+        try:
+            self.df['obv'] = talib.OBV(self.df['close'], self.df['vol'])
+        except Exception as e:
+            logger.error(f"OBV计算失败: {str(e)}")
+            self.df['obv'] = np.nan
         
         # 计算ATR
         logger.debug("计算ATR指标")
-        self.df['atr'] = talib.ATR(self.df['high'], self.df['low'], self.df['close'])
+        try:
+            self.df['atr'] = talib.ATR(self.df['high'], self.df['low'], self.df['close'])
+        except Exception as e:
+            logger.error(f"ATR计算失败: {str(e)}")
+            self.df['atr'] = np.nan
         
         # 计算压力位和支撑位
         logger.debug("计算压力位和支撑位")
@@ -81,9 +121,12 @@ class TechnicalIndicators:
         
         # 为每个数据点计算压力位和支撑位
         for i in range(len(self.df)):
-            if i >= 34:  # 确保有足够的数据计算
+            # 确保有足够的数据计算，但至少需要5个数据点
+            lookback = min(34, max(5, i + 1))
+            if i >= lookback - 1:  # 确保有足够的数据计算
                 support_levels, resistance_levels = self.find_key_levels(
-                    self.df.iloc[i-34:i+1]
+                    self.df.iloc[i-lookback+1:i+1],
+                    lookback=lookback
                 )
                 # 将numpy数组转换为列表
                 self.df.at[i, 'support_levels'] = support_levels.tolist() if isinstance(support_levels, np.ndarray) else support_levels
@@ -198,6 +241,7 @@ class TechnicalIndicators:
         
         return {
             'close': point['close'],
+            'change': point['pct_chg'],
             'vol': point['vol'],
             'EMA_short': point['EMA_short'],
             'EMA_long': point['EMA_long'],
@@ -230,8 +274,8 @@ class TechnicalIndicators:
         logger.debug(f"计算压力位和支撑位，回看周期: {lookback}")
         
         # 确保数据足够
-        if len(df) < lookback:
-            logger.warning(f"数据量不足{lookback}条，无法计算压力位和支撑位")
+        if len(df) < 5:  # 至少需要5个数据点
+            logger.warning(f"数据量不足5条，无法计算压力位和支撑位")
             return [], []
             
         # 获取最近lookback周期的数据
@@ -240,7 +284,11 @@ class TechnicalIndicators:
         close = df['close'].values
         
         # 计算ATR
-        atr = talib.ATR(high, low, close, 14)[-1]
+        try:
+            atr = talib.ATR(high, low, close, min(14, len(df)-1))[-1]
+        except Exception as e:
+            logger.error(f"ATR计算失败: {str(e)}")
+            atr = (high.max() - low.min()) / 10  # 使用简单的波动率估计
         
         # 计算PP（中枢点）
         pp = (high.max() + low.min() + close[-1]) / 3

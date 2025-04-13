@@ -10,17 +10,21 @@ import asyncio
 class EMAAnalyzer:
     """双均线分析类"""
     
-    def __init__(self, df: pd.DataFrame, ema_short_period: int = 5, ema_long_period: int = 8):
+    def __init__(self, df: pd.DataFrame, ema_short_period: int = 5, ema_long_period: int = 8, stock_name: str = "", stock_code: str = ""):
         """初始化EMA分析器
         
         Args:
             df: 包含EMA数据的DataFrame
             ema_short_period: 短期EMA周期
             ema_long_period: 长期EMA周期
+            stock_name: 股票名称
+            stock_code: 股票代码
         """
         self.df = df.copy()
         self.ema_short_period = ema_short_period
         self.ema_long_period = ema_long_period
+        self.stock_name = stock_name
+        self.stock_code = stock_code
         self.deepseek = DeepSeekClient()
         
     def detect_crossovers(self) -> List[Dict]:
@@ -43,13 +47,35 @@ class EMAAnalyzer:
         crossovers = []
         for idx in df[df['crossover'] != 0].index:
             # 获取支撑位和压力位
-            support_levels, resistance_levels = self.find_support_resistance()
+            support_levels, resistance_levels = self.find_support_resistance(current_idx=idx)
+            
+            # 获取过去5个交易日的数据
+            prev_5_days = []
+            # 确保 DataFrame 按日期排序
+            df_sorted = df.sort_values('date')  # 按日期升序排序
+            # 找到当前日期在排序后DataFrame中的位置
+            current_idx = df_sorted[df_sorted['date'] == df.loc[idx, 'date']].index[0]
+            # 获取当前日期之前的5个交易日数据
+            start_idx = max(0, df_sorted.index.get_loc(current_idx) - 5)
+            end_idx = df_sorted.index.get_loc(current_idx)
+            prev_rows = df_sorted.iloc[start_idx:end_idx]
+            
+            for _, row in prev_rows.iterrows():
+                prev_5_days.append({
+                    'date': row['date'],
+                    'close': row['close'],
+                    'change': row['pct_chg'],
+                    'vol': row['vol'],
+                    'EMA_short': row['EMA_short'],
+                    'EMA_long': row['EMA_long']
+                })
             
             crossovers.append({
                 'date': df.loc[idx, 'date'],
                 'type': 'golden_cross' if df.loc[idx, 'crossover'] == 1 else 'death_cross',
                 'indicators': {
                     'close': df.loc[idx, 'close'],
+                    'change': df.loc[idx, 'pct_chg'],
                     'vol': df.loc[idx, 'vol'],
                     'EMA_short': df.loc[idx, 'EMA_short'],
                     'EMA_long': df.loc[idx, 'EMA_long'],
@@ -67,7 +93,8 @@ class EMAAnalyzer:
                     'bb_lower': df.loc[idx, 'bb_lower'],
                     'support_levels': support_levels,
                     'resistance_levels': resistance_levels
-                }
+                },
+                'prev_5_days': prev_5_days
             })
         
         return crossovers
@@ -94,36 +121,65 @@ class EMAAnalyzer:
         
         return df
     
-    def find_support_resistance(self, window: int = 20) -> Tuple[List[float], List[float]]:
+    def find_support_resistance(self, current_idx: Optional[int] = None, window: int = 20) -> Tuple[List[float], List[float]]:
         """寻找支撑位和阻力位
         
         Args:
+            current_idx: 当前交叉点的索引
             window: 寻找局部极值的窗口大小
             
         Returns:
-            支撑位和阻力位列表
+            支撑位和阻力位列表（包含5天平均值）
         """
-        # 使用EMA交叉点作为潜在的支撑/阻力位
-        cross_points = self.find_ema_crossovers()
+        logger.debug(f"开始查找支撑位和压力位, current_idx: {current_idx}")
         
-        # 在交叉点附近寻找局部极值
-        support_levels = []
-        resistance_levels = []
-        
-        for point in cross_points:
-            start_idx = max(0, point - window)
-            end_idx = min(len(self.df), point + window)
-            window_data = self.df.iloc[start_idx:end_idx]
+        # 从DataFrame中获取支撑位和压力位
+        if current_idx is not None and current_idx < len(self.df):
+            row = self.df.iloc[current_idx]
+            logger.debug(f"当前行数据: {row.to_dict()}")
+            logger.debug(f"support_levels类型: {type(row['support_levels'])}, 值: {row['support_levels']}")
+            logger.debug(f"resistance_levels类型: {type(row['resistance_levels'])}, 值: {row['resistance_levels']}")
             
-            # 寻找局部最小值作为支撑位
-            if window_data['low'].min() == window_data['low'].iloc[window//2]:
-                support_levels.append(window_data['low'].min())
-                
-            # 寻找局部最大值作为阻力位
-            if window_data['high'].max() == window_data['high'].iloc[window//2]:
-                resistance_levels.append(window_data['high'].max())
-                
-        return support_levels, resistance_levels
+            # 获取过去5天的支撑位和压力位
+            past_5_days_support = []
+            past_5_days_resistance = []
+            
+            # 确保DataFrame按日期排序
+            df_sorted = self.df.sort_values('date')
+            current_date = row['date']
+            current_sorted_idx = df_sorted[df_sorted['date'] == current_date].index[0]
+            start_idx = max(0, df_sorted.index.get_loc(current_sorted_idx) - 4)  # 获取前4天（加上当天共5天）
+            past_5_days = df_sorted.iloc[start_idx:df_sorted.index.get_loc(current_sorted_idx) + 1]
+            
+            logger.debug(f"过去5天日期: {past_5_days['date'].tolist()}")
+            
+            # 收集过去5天的支撑位和压力位
+            for _, past_row in past_5_days.iterrows():
+                if isinstance(past_row['support_levels'], list) and len(past_row['support_levels']) >= 2:
+                    past_5_days_support.append(past_row['support_levels'])
+                if isinstance(past_row['resistance_levels'], list) and len(past_row['resistance_levels']) >= 2:
+                    past_5_days_resistance.append(past_row['resistance_levels'])
+            
+            logger.debug(f"过去5天支撑位: {past_5_days_support}")
+            logger.debug(f"过去5天压力位: {past_5_days_resistance}")
+            
+            # 计算平均值
+            avg_strong_support = np.mean([levels[0] for levels in past_5_days_support]) if past_5_days_support else None
+            avg_support = np.mean([levels[1] for levels in past_5_days_support]) if past_5_days_support else None
+            avg_strong_resistance = np.mean([levels[0] for levels in past_5_days_resistance]) if past_5_days_resistance else None
+            avg_resistance = np.mean([levels[1] for levels in past_5_days_resistance]) if past_5_days_resistance else None
+            
+            # 构建返回结果
+            support_levels = [avg_strong_support, avg_support] if avg_strong_support is not None and avg_support is not None else []
+            resistance_levels = [avg_strong_resistance, avg_resistance] if avg_strong_resistance is not None and avg_resistance is not None else []
+            
+            logger.debug(f"5天平均支撑位: {support_levels}")
+            logger.debug(f"5天平均压力位: {resistance_levels}")
+            
+            return support_levels, resistance_levels
+        
+        logger.debug("current_idx无效，返回空列表")
+        return [], []
         
     def find_ema_crossovers(self) -> List[int]:
         """寻找EMA交叉点
@@ -233,18 +289,27 @@ class EMAAnalyzer:
         indicators = crossover['indicators']
         cross_type = "金叉" if crossover['type'] == 'golden_cross' else "死叉"
         
-        # 获取前一交易日的支撑位和压力位
-        prev_support_levels = crossover.get('prev_support_levels', [])
-        prev_resistance_levels = crossover.get('prev_resistance_levels', [])
+        # 从indicators中获取支撑位和压力位
+        support_levels = indicators.get('support_levels', [])
+        resistance_levels = indicators.get('resistance_levels', [])
         
         # 格式化支撑位和压力位
-        support_str = ", ".join([f"{level:.2f}" for level in prev_support_levels]) if prev_support_levels else "无数据"
-        resistance_str = ", ".join([f"{level:.2f}" for level in prev_resistance_levels]) if prev_resistance_levels else "无数据"
+        support_str = f"强支撑位: {support_levels[0]:.2f}, 支撑位: {support_levels[1]:.2f}" if len(support_levels) >= 2 else "无数据"
+        resistance_str = f"强压力位: {resistance_levels[0]:.2f}, 压力位: {resistance_levels[1]:.2f}" if len(resistance_levels) >= 2 else "无数据"
+        
+        # 格式化过去5个交易日的数据
+        prev_5_days_str = ""
+        if 'prev_5_days' in crossover and crossover['prev_5_days']:
+            prev_5_days_str = "\n过去5个交易日的基本情况：\n"
+            for i, day in enumerate(crossover['prev_5_days'], 1):
+                prev_5_days_str += f"第{i}天 ({day['date']}): 收盘价 {day['close']:.2f}, 成交量 {day['vol']:.2f}, EMA短期 {day['EMA_short']:.2f}, EMA长期 {day['EMA_long']:.2f}, 涨跌幅 {day['change']:.2f}%\n"
         
         return f"""
+        {f'股票: {self.stock_name}({self.stock_code})' if self.stock_name and self.stock_code else ''}
         在{crossover['date']}出现了EMA双均线{cross_type}，当前技术指标如下：
         
         收盘价: {indicators['close']:.2f}
+        涨跌幅: {indicators['change']:.2f}%
         成交量: {indicators['vol']:.2f}
         EMA短期: {indicators['EMA_short']:.2f}
         EMA长期: {indicators['EMA_long']:.2f}
@@ -261,9 +326,9 @@ class EMAAnalyzer:
         OBV: {indicators['obv']:.2f}
         ATR: {indicators['atr']:.2f}
         
-        前一交易日支撑位: {support_str}
-        前一交易日压力位: {resistance_str}
-        
+        {support_str}
+        {resistance_str}
+        {prev_5_days_str}
         基于以上技术指标，请分析是否应该开仓，并给出具体理由。
         请用中文回答，并给出明确的"建议开仓"、"建议不开仓"的结论。
         """ 
