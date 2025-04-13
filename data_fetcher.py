@@ -92,8 +92,9 @@ class DataFetcher:
         start_date: str,
         end_date: str,
         freq: str = '60min',
-        save_dir: str = 'minute_data'
-    ) -> Tuple[bool, Optional[pd.DataFrame]]:
+        save_dir: str = 'minute_data',
+        asset_type: str = "stock"
+    ) -> Optional[pd.DataFrame]:
         """获取分钟级数据并保存到csv
         
         Args:
@@ -102,30 +103,37 @@ class DataFetcher:
             end_date: 结束日期，格式：YYYYMMDD
             freq: 频率，可选：1min/5min/15min/30min/60min
             save_dir: 保存目录
+            asset_type: 资产类型，可选：stock/future/fund
             
         Returns:
-            (是否成功获取并保存数据, DataFrame数据)
+            DataFrame数据，获取失败返回None
         """
-        logger.info(f"开始获取分钟数据: {code}, 频率: {freq}, 时间范围: {start_date} - {end_date}")
+        logger.info(f"开始获取{asset_type}分钟数据: {code}, 频率: {freq}, 时间范围: {start_date} - {end_date}")
         try:
             # 创建保存目录
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             
             # 检查是否存在已有文件
-            existing_files = [f for f in os.listdir(save_dir) if f.startswith(code)]
-            if existing_files:
-                logger.info(f"找到已存在的数据文件: {existing_files[0]}")
-                df = pd.read_csv(os.path.join(save_dir, existing_files[0]))
-                return df
+            filename = f"{code}_{asset_type}_{freq}_{start_date}_{end_date}.csv"
+            filepath = os.path.join(save_dir, filename)
+            if os.path.exists(filepath):
+                logger.info(f"找到已存在的数据文件: {filename}")
+                return pd.read_csv(filepath)
                 
-            # 获取分钟数据
-            df = ts.pro_bar(
-                ts_code=code, 
-                start_date=start_date,
-                end_date=end_date,
-                freq=freq
-            )
+            # 根据资产类型获取分钟数据
+            if asset_type == "stock":
+                logger.debug("获取股票分钟数据")
+                df = self.pro.pro_bar(ts_code=code, start_date=start_date, end_date=end_date, freq=freq)
+            elif asset_type == "future":
+                logger.debug("获取期货分钟数据")
+                df = self.pro.ft_mins(ts_code=code, start_date=start_date, end_date=end_date, freq=freq)
+            elif asset_type == "fund":
+                logger.debug("获取ETF分钟数据")
+                df = self.pro.pro_bar(ts_code=code, start_date=start_date, end_date=end_date, freq=freq, asset="FD")
+            else:
+                logger.error(f"不支持的资产类型: {asset_type}")
+                return None
             
             if df is None or len(df) == 0:
                 logger.warning(f"未获取到数据")
@@ -139,10 +147,7 @@ class DataFetcher:
             df = df.sort_values("date")
             
             # 保存到csv
-            filename = f"{code}_{freq}_{start_date}_{end_date}.csv"
-            filepath = os.path.join(save_dir, filename)
             df.to_csv(filepath, index=False)
-            
             logger.info(f"成功保存{len(df)}条记录到: {filepath}")
             return df
             
@@ -157,11 +162,12 @@ if __name__ == "__main__":
     fetcher = DataFetcher(TUSHARE_TOKEN)
     
     # 测试参数
-    code = "000001.SZ"  # 平安银行
-    start_date = "20230101"
-    end_date = "20241231"
-    freq = "60min"
+    code = "RB2505.SHF"
+    start_date = "20240101"
+    end_date = "20251231"
+    freq = "15min"
     save_dir = "minute_data"
+    asset_type = "future"
     
     # 获取并保存分钟数据
     df = fetcher.get_minute_data(
@@ -169,7 +175,8 @@ if __name__ == "__main__":
         start_date=start_date,
         end_date=end_date,
         freq=freq,
-        save_dir=save_dir
+        save_dir=save_dir,
+        asset_type=asset_type
     )
     
     logger.info("数据获取并保存成功")

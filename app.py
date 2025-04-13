@@ -104,7 +104,7 @@ if st.button("开始分析"):
             # 只保留实际需要的时间范围的数据
             # 将df中的date列格式化为yyyymmdd格式再比较
             df['date_formatted'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d')
-            df = df[df['date_formatted'] >= start_date]
+            df = df[(df['date_formatted'] >= start_date) & (df['date_formatted'] <= end_date)]
             df = df.drop(columns=['date_formatted'])  # 删除临时列
 
             logger.info(f"数据量: {len(df)}, df: {df}")
